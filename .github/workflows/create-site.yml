@@ -1,0 +1,224 @@
+name: Create New Site
+
+on:
+  workflow_dispatch:
+    inputs:
+      site_name:
+        description: 'Site display name (e.g., "Acme Corp")'
+        required: true
+        type: string
+      domain:
+        description: 'Primary domain (e.g., acme.example.com)'
+        required: true
+        type: string
+      primary_color:
+        description: 'Primary brand color (hex)'
+        required: false
+        default: '#3B82F6'
+        type: string
+      secondary_color:
+        description: 'Secondary accent color (hex)'
+        required: false
+        default: '#10B981'
+        type: string
+      font:
+        description: 'Font family'
+        required: false
+        default: 'inter'
+        type: choice
+        options:
+          - inter
+          - roboto
+          - poppins
+          - playfair
+          - montserrat
+          - dm-sans
+      layout_theme:
+        description: 'Layout theme'
+        required: false
+        default: 'modern'
+        type: choice
+        options:
+          - modern
+          - classic
+          - bold
+          - minimal
+
+jobs:
+  create-site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create site in Payload CMS
+        env:
+          CMS_URL: ${{ secrets.PAYLOAD_API_URL }}
+          API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+        run: |
+          set -e
+
+          echo "📦 Creating site: ${{ inputs.site_name }} (${{ inputs.domain }})"
+
+          # 1. Create Site record
+          SITE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$CMS_URL/api/sites" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Api-Key $API_KEY" \
+            -d '{
+              "name": "${{ inputs.site_name }}",
+              "domain": "${{ inputs.domain }}",
+              "status": "active"
+            }')
+
+          HTTP_CODE=$(echo "$SITE_RESPONSE" | tail -1)
+          BODY=$(echo "$SITE_RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Failed to create site (HTTP $HTTP_CODE)"
+            echo "$BODY"
+            exit 1
+          fi
+
+          SITE_ID=$(echo "$BODY" | jq -r '.doc.id')
+          echo "✅ Site created: $SITE_ID"
+          echo "SITE_ID=$SITE_ID" >> $GITHUB_ENV
+
+          # 2. Create SiteSettings
+          echo "📐 Creating site settings..."
+          curl -s -X POST "$CMS_URL/api/site-settings" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Api-Key $API_KEY" \
+            -d '{
+              "site": "'"$SITE_ID"'",
+              "theme": {
+                "primaryColor": "${{ inputs.primary_color }}",
+                "secondaryColor": "${{ inputs.secondary_color }}",
+                "accentColor": "#F59E0B",
+                "backgroundColor": "#FFFFFF",
+                "textColor": "#1F2937",
+                "fontFamily": "${{ inputs.font }}",
+                "headingFontFamily": "inherit",
+                "borderRadius": "md",
+                "layoutTheme": "${{ inputs.layout_theme }}"
+              },
+              "headerLinks": [
+                { "label": "Home", "url": "/" },
+                { "label": "About", "url": "/about" },
+                { "label": "Contact", "url": "/contact" }
+              ],
+              "footerLinks": [
+                {
+                  "groupLabel": "Company",
+                  "links": [
+                    { "label": "About", "url": "/about" },
+                    { "label": "Contact", "url": "/contact" }
+                  ]
+                }
+              ],
+              "footerContent": {
+                "copyrightText": "© {year} ${{ inputs.site_name }}. All rights reserved.",
+                "showPoweredBy": false
+              }
+            }' > /dev/null
+
+          echo "✅ Settings created"
+
+          # 3. Create Home Page
+          echo "📄 Creating home page..."
+          curl -s -X POST "$CMS_URL/api/pages" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Api-Key $API_KEY" \
+            -d '{
+              "site": "'"$SITE_ID"'",
+              "title": "Home",
+              "slug": "home",
+              "status": "published",
+              "isHomePage": true,
+              "blocks": [
+                {
+                  "blockType": "hero",
+                  "style": "centered",
+                  "heading": "Welcome to ${{ inputs.site_name }}",
+                  "subheading": "Your website is ready. Start customizing from the CMS.",
+                  "cta": {
+                    "label": "Learn More",
+                    "url": "/about",
+                    "variant": "primary"
+                  }
+                },
+                {
+                  "blockType": "content",
+                  "layout": "default",
+                  "columns": [
+                    {
+                      "richText": {
+                        "root": {
+                          "type": "root",
+                          "children": [
+                            {
+                              "type": "heading",
+                              "tag": "h2",
+                              "children": [{ "type": "text", "text": "About Us" }]
+                            },
+                            {
+                              "type": "paragraph",
+                              "children": [{ "type": "text", "text": "Edit this content from the CMS admin panel." }]
+                            }
+                          ]
+                        }
+                      },
+                      "width": "full"
+                    }
+                  ]
+                }
+              ]
+            }' > /dev/null
+
+          echo "✅ Home page created"
+
+      - name: Add custom domain to Cloudflare Pages
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          echo "🌐 Adding domain ${{ inputs.domain }} to Cloudflare Pages..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/website-factory-frontend/domains" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"name": "${{ inputs.domain }}"}')
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if echo "$BODY" | jq -e '.success' > /dev/null 2>&1; then
+            echo "✅ Domain added to Cloudflare Pages"
+          else
+            echo "⚠️  Domain setup may need manual attention:"
+            echo "$BODY" | jq '.'
+          fi
+
+          echo ""
+          echo "════════════════════════════════════════════════"
+          echo "🎉 Site '${{ inputs.site_name }}' created!"
+          echo ""
+          echo "  Domain:    ${{ inputs.domain }}"
+          echo "  Site ID:   $SITE_ID"
+          echo ""
+          echo "  DNS Setup: CNAME ${{ inputs.domain }} → website-factory-frontend.pages.dev"
+          echo "  CMS Admin: ${{ secrets.PAYLOAD_API_URL }}/admin"
+          echo "════════════════════════════════════════════════"
+
+      - name: Trigger frontend cache warm
+        env:
+          FRONTEND_URL: ${{ secrets.FRONTEND_WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+        run: |
+          curl -s -X POST "$FRONTEND_URL/api/webhook/invalidate" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: $WEBHOOK_SECRET" \
+            -d '{
+              "type": "site",
+              "siteId": "'"$SITE_ID"'",
+              "domain": "${{ inputs.domain }}"
+            }' || echo "⚠️  Cache warm skipped (frontend may not be ready)"
