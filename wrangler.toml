@@ -1,0 +1,35 @@
+# Payload CMS — Cloudflare Workers deployment
+name = "website-factory-cms"
+main = "dist/index.js"
+compatibility_date = "2024-12-01"
+node_compat = true
+
+# D1 Database (SQLite on Cloudflare)
+[[d1_databases]]
+binding = "DB"
+database_name = "website-factory-db"
+database_id = "7eeb12a8-d295-40b3-8bcc-3e6eafcd6a19"
+
+# R2 Bucket for media uploads
+[[r2_buckets]]
+binding = "R2_MEDIA"
+bucket_name = "website-factory-media"
+# Create with: wrangler r2 bucket create website-factory-media
+
+# KV Namespace for sessions/cache
+[[kv_namespaces]]
+binding = "KV_SESSIONS"
+id = "2bee696f1e8247628e5d0f4f34577e8b"
+
+[vars]
+PAYLOAD_SECRET = "change-me-in-production-use-wrangler-secret"
+ADMIN_URL = "https://cms.yourfactory.com"
+FRONTEND_WEBHOOK_URL = "https://yoursite.pages.dev"
+WEBHOOK_SECRET = "change-me"
+
+# Environment-specific
+[env.production]
+routes = [{ pattern = "cms.yourfactory.com", custom_domain = true }]
+
+[env.staging]
+routes = [{ pattern = "cms-staging.yourfactory.com", custom_domain = true }]
