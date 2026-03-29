@@ -34,6 +34,7 @@
   ],
   "vars": {
     "PAYLOAD_SECRET": "website-factory-secret-change-in-prod",
+    "PAYLOAD_PUBLIC_SERVER_URL": "https://website-factory-cms.nick-e3c.workers.dev",
     "ADMIN_URL": "https://website-factory-cms.nick-e3c.workers.dev",
     "FRONTEND_WEBHOOK_URL": "https://website-factory-frontend.pages.dev",
     "WEBHOOK_SECRET": "wf-webhook-secret-2024"

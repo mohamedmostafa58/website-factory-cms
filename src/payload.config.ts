@@ -69,7 +69,7 @@ export default buildConfig({
 
   logger: isProduction ? cloudflareLogger : undefined,
 
-  serverURL: process.env.PAYLOAD_PUBLIC_SERVER_URL ?? '',
+  serverURL: process.env.PAYLOAD_PUBLIC_SERVER_URL || process.env.ADMIN_URL || '',
 
   typescript: {
     outputFile: path.resolve(dirname, 'payload-types.ts'),
