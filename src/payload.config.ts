@@ -1,7 +1,13 @@
-import { buildConfig } from 'payload'
-import { sqliteAdapter } from '@payloadcms/db-sqlite'
+import fs from 'fs'
+import path from 'path'
+import { sqliteD1Adapter } from '@payloadcms/db-d1-sqlite'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
-import { s3Storage } from '@payloadcms/storage-s3'
+import { r2Storage } from '@payloadcms/storage-r2'
+import { buildConfig } from 'payload'
+import { fileURLToPath } from 'url'
+import { CloudflareContext, getCloudflareContext } from '@opennextjs/cloudflare'
+import { GetPlatformProxyOptions } from 'wrangler'
+
 import { Users } from './collections/Users'
 import { Sites } from './collections/Sites'
 import { SiteSettings } from './collections/SiteSettings'
@@ -9,59 +15,84 @@ import { Pages } from './collections/Pages'
 import { Media } from './collections/Media'
 import { FormSubmissions } from './collections/FormSubmissions'
 
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+const realpath = (value: string) => (fs.existsSync(value) ? fs.realpathSync(value) : undefined)
+
+const isCLI = process.argv.some((value) => realpath(value)?.endsWith(path.join('payload', 'bin.js')))
+const isProduction = process.env.NODE_ENV === 'production'
+
+// Cloudflare-compatible structured logger
+const createLog =
+  (level: string, fn: typeof console.log) => (objOrMsg: object | string, msg?: string) => {
+    if (typeof objOrMsg === 'string') {
+      fn(JSON.stringify({ level, msg: objOrMsg }))
+    } else {
+      fn(JSON.stringify({ level, ...objOrMsg, msg: msg ?? (objOrMsg as { msg?: string }).msg }))
+    }
+  }
+
+const cloudflareLogger = {
+  level: process.env.PAYLOAD_LOG_LEVEL || 'info',
+  trace: createLog('trace', console.debug),
+  debug: createLog('debug', console.debug),
+  info: createLog('info', console.log),
+  warn: createLog('warn', console.warn),
+  error: createLog('error', console.error),
+  fatal: createLog('fatal', console.error),
+  silent: () => {},
+} as any
+
+// Get Cloudflare bindings (D1, R2, etc.)
+const cloudflare =
+  isCLI || !isProduction
+    ? await getCloudflareContextFromWrangler()
+    : await getCloudflareContext({ async: true })
+
 export default buildConfig({
-  // Use SQLite adapter — works with Cloudflare D1 via Turso driver
-  db: sqliteAdapter({
-    client: {
-      url: process.env.DATABASE_URL ?? 'file:./data/payload.db',
-      authToken: process.env.DATABASE_AUTH_TOKEN,
-    },
-  }),
+  // ── Database: Cloudflare D1 ──
+  db: sqliteD1Adapter({ binding: cloudflare.env.D1 }),
 
-  editor: lexicalEditor({}),
+  editor: lexicalEditor(),
 
-  // R2-compatible S3 storage for media uploads
+  // ── Storage: Cloudflare R2 ──
   plugins: [
-    s3Storage({
+    r2Storage({
+      bucket: cloudflare.env.R2,
       collections: { media: true },
-      bucket: process.env.R2_BUCKET ?? 'website-factory-media',
-      config: {
-        credentials: {
-          accessKeyId: process.env.R2_ACCESS_KEY_ID ?? '',
-          secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? '',
-        },
-        region: 'auto',
-        endpoint: process.env.R2_ENDPOINT ?? '',
-      },
     }),
   ],
 
   collections: [Users, Sites, SiteSettings, Pages, Media, FormSubmissions],
 
-  // CORS: allow all tenant domains + admin domain
-  cors: [
-    process.env.ADMIN_URL ?? 'http://localhost:3000',
-    // Wildcard patterns for tenant domains
-    ...(process.env.CORS_ORIGINS?.split(',') ?? []),
-  ],
+  secret: process.env.PAYLOAD_SECRET || '',
 
-  // API configuration
-  serverURL: process.env.PAYLOAD_PUBLIC_SERVER_URL ?? 'http://localhost:3000',
+  logger: isProduction ? cloudflareLogger : undefined,
 
-  secret: process.env.PAYLOAD_SECRET ?? 'CHANGE-ME-IN-PRODUCTION',
+  serverURL: process.env.PAYLOAD_PUBLIC_SERVER_URL ?? '',
 
   typescript: {
-    outputFile: './src/payload-types.ts',
+    outputFile: path.resolve(dirname, 'payload-types.ts'),
   },
 
   admin: {
     user: Users.slug,
+    importMap: {
+      baseDir: path.resolve(dirname),
+    },
     meta: {
       titleSuffix: '— Website Factory',
     },
   },
 
-  // Custom REST endpoints for the frontend to bulk-fetch site data
+  // CORS: allow frontend domains
+  cors: [
+    process.env.ADMIN_URL ?? '',
+    process.env.FRONTEND_WEBHOOK_URL ?? '',
+    ...(process.env.CORS_ORIGINS?.split(',').filter(Boolean) ?? []),
+  ].filter(Boolean),
+
+  // ── Custom endpoint: bulk fetch site data for frontend ──
   endpoints: [
     {
       path: '/site-bundle/:domain',
@@ -73,7 +104,6 @@ export default buildConfig({
         }
 
         try {
-          // Find site by domain
           const sites = await req.payload.find({
             collection: 'sites',
             where: {
@@ -90,7 +120,6 @@ export default buildConfig({
             return Response.json({ error: 'Site not found' }, { status: 404 })
           }
 
-          // Fetch settings and pages in parallel
           const [settings, pages] = await Promise.all([
             req.payload.find({
               collection: 'site-settings',
@@ -106,11 +135,11 @@ export default buildConfig({
                 ],
               },
               limit: 100,
-              depth: 2, // Resolve media relationships
+              depth: 2,
             }),
           ])
 
-          const bundle = {
+          return Response.json({
             site: {
               id: site.id,
               name: site.name,
@@ -120,9 +149,7 @@ export default buildConfig({
             settings: settings.docs[0] ?? null,
             pages: pages.docs,
             fetchedAt: new Date().toISOString(),
-          }
-
-          return Response.json(bundle, {
+          }, {
             headers: {
               'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300',
             },
@@ -134,3 +161,14 @@ export default buildConfig({
     },
   ],
 })
+
+// Adapted from official Payload D1 template
+function getCloudflareContextFromWrangler(): Promise<CloudflareContext> {
+  return import(/* webpackIgnore: true */ `${'__wrangler'.replaceAll('_', '')}`).then(
+    ({ getPlatformProxy }) =>
+      getPlatformProxy({
+        environment: process.env.CLOUDFLARE_ENV,
+        remoteBindings: isProduction,
+      } satisfies GetPlatformProxyOptions),
+  )
+}

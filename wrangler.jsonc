@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "e3cf4aad518c3da535dc6942ad57d20f",
+  "main": ".open-next/worker.js",
+  "name": "website-factory-cms",
+  "compatibility_date": "2025-08-15",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "D1",
+      "database_id": "7eeb12a8-d295-40b3-8bcc-3e6eafcd6a19",
+      "database_name": "website-factory-db",
+      "remote": true
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "website-factory-media"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "KV_SESSIONS",
+      "id": "2bee696f1e8247628e5d0f4f34577e8b"
+    }
+  ],
+  "vars": {
+    "PAYLOAD_SECRET": "website-factory-secret-change-in-prod",
+    "ADMIN_URL": "https://website-factory-cms.nick-e3c.workers.dev",
+    "FRONTEND_WEBHOOK_URL": "https://website-factory-frontend.pages.dev",
+    "WEBHOOK_SECRET": "wf-webhook-secret-2024"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
+}
