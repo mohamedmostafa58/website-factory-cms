@@ -1,5 +1,6 @@
 import type { CollectionConfig } from 'payload'
 import { isSuperAdmin } from '../access/tenantAccess'
+import { createSiteRepo } from '../hooks/createSiteRepo'
 
 export const Sites: CollectionConfig = {
   slug: 'sites',
@@ -56,11 +57,21 @@ export const Sites: CollectionConfig = {
         { label: 'Disabled', value: 'disabled' },
       ],
     },
+    {
+      name: 'repoUrl',
+      type: 'text',
+      admin: {
+        description: 'GitHub repo URL — auto-created when site is added',
+        readOnly: true,
+      },
+    },
   ],
   hooks: {
     afterChange: [
+      // Auto-create GitHub repo + Cloudflare Pages domain + default content
+      createSiteRepo,
+      // Trigger frontend cache invalidation
       async ({ doc, req }) => {
-        // Trigger frontend cache invalidation via webhook
         const webhookUrl = process.env.FRONTEND_WEBHOOK_URL
         if (webhookUrl) {
           try {
