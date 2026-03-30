@@ -35,12 +35,6 @@
   "limits": {
     "cpu_ms": 30000
   },
-  "kv_namespaces": [
-    {
-      "binding": "KV_SESSIONS",
-      "id": "2bee696f1e8247628e5d0f4f34577e8b"
-    }
-  ],
   "vars": {
     "PAYLOAD_SECRET": "website-factory-secret-change-in-prod",
     "PAYLOAD_PUBLIC_SERVER_URL": "https://website-factory-cms.nick-e3c.workers.dev",
