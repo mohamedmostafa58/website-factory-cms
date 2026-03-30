@@ -1,5 +1,6 @@
 import type { CollectionConfig } from 'payload'
 import { tenantAccess, tenantCreateAccess, siteFieldAccess } from '../access/tenantAccess'
+import { invalidateSiteCache } from '../hooks/invalidateCache'
 
 /**
  * SiteSettings — one document per site.
@@ -21,26 +22,8 @@ export const SiteSettings: CollectionConfig = {
   hooks: {
     afterChange: [
       async ({ doc, req }) => {
-        // Trigger frontend cache invalidation when settings change
-        const webhookUrl = process.env.FRONTEND_WEBHOOK_URL
-        if (webhookUrl) {
-          const siteId = typeof doc.site === 'string' ? doc.site : doc.site?.id
-          try {
-            await fetch(`${webhookUrl}/api/webhook/invalidate`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Webhook-Secret': process.env.WEBHOOK_SECRET ?? '',
-              },
-              body: JSON.stringify({
-                type: 'settings',
-                siteId,
-              }),
-            })
-          } catch (e) {
-            req.payload.logger.error(`Failed to invalidate settings cache for site ${siteId}`)
-          }
-        }
+        const siteId = typeof doc.site === 'string' ? doc.site : doc.site?.id
+        if (siteId) await invalidateSiteCache(req.payload, siteId, { type: 'settings' })
         return doc
       },
     ],

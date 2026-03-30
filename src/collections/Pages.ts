@@ -1,5 +1,6 @@
 import type { CollectionConfig } from 'payload'
 import { tenantAccess, tenantCreateAccess, siteFieldAccess } from '../access/tenantAccess'
+import { invalidateSiteCache } from '../hooks/invalidateCache'
 import { HeroBlock } from '../blocks/Hero'
 import { ContentBlock } from '../blocks/Content'
 import { ImageGalleryBlock } from '../blocks/ImageGallery'
@@ -23,26 +24,8 @@ export const Pages: CollectionConfig = {
   hooks: {
     afterChange: [
       async ({ doc, req }) => {
-        const webhookUrl = process.env.FRONTEND_WEBHOOK_URL
-        if (webhookUrl) {
-          const siteId = typeof doc.site === 'string' ? doc.site : doc.site?.id
-          try {
-            await fetch(`${webhookUrl}/api/webhook/invalidate`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Webhook-Secret': process.env.WEBHOOK_SECRET ?? '',
-              },
-              body: JSON.stringify({
-                type: 'page',
-                siteId,
-                pageSlug: doc.slug,
-              }),
-            })
-          } catch (e) {
-            req.payload.logger.error(`Failed to invalidate page cache: ${doc.slug}`)
-          }
-        }
+        const siteId = typeof doc.site === 'string' ? doc.site : doc.site?.id
+        if (siteId) await invalidateSiteCache(req.payload, siteId, { type: 'page', pageSlug: doc.slug })
         return doc
       },
     ],
