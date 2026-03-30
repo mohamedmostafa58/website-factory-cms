@@ -61,7 +61,15 @@ export const Sites: CollectionConfig = {
       name: 'repoUrl',
       type: 'text',
       admin: {
-        description: 'GitHub repo URL — auto-created when site is added',
+        description: 'GitHub repo — auto-created when site is added',
+        readOnly: true,
+      },
+    },
+    {
+      name: 'pagesUrl',
+      type: 'text',
+      admin: {
+        description: 'Cloudflare Pages URL — auto-created',
         readOnly: true,
       },
     },

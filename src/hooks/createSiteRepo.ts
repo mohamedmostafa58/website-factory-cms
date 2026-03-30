@@ -2,19 +2,14 @@
  * afterChange hook for the Sites collection.
  *
  * When a NEW site is created from the Payload admin GUI:
- * 1. Creates a GitHub repo from the frontend template repo
- * 2. Updates the repo's wrangler.toml with the site's domain / CMS URL
- * 3. Adds custom domain to Cloudflare Pages
- * 4. Creates default SiteSettings + Home page if not already done
+ * 1. Creates a GitHub repo from the frontend template
+ * 2. Creates a dedicated Cloudflare Pages project connected to that repo
+ * 3. Sets environment variables on the Pages project
+ * 4. Adds the custom domain to the Pages project
+ * 5. Updates the repo config (wrangler.toml) with CMS URL
+ * 6. Creates default SiteSettings + Home page
  *
- * Required env vars:
- *   GITHUB_TOKEN          — GitHub PAT with repo scope
- *   GITHUB_TEMPLATE_OWNER — Owner of the template repo (e.g., "mohamedmostafa58")
- *   GITHUB_TEMPLATE_REPO  — Template repo name (e.g., "website-factory-frontend")
- *   GITHUB_OWNER          — Owner for new repos (defaults to GITHUB_TEMPLATE_OWNER)
- *   CF_API_TOKEN           — Cloudflare API token
- *   CF_ACCOUNT_ID          — Cloudflare account ID
- *   CF_PAGES_PROJECT       — Cloudflare Pages project name (if using single project + custom domains)
+ * Each site = its own GitHub repo + its own CF Pages project + its own domain
  */
 
 import type { CollectionAfterChangeHook } from 'payload'
@@ -24,7 +19,6 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
   operation,
   req,
 }) => {
-  // Only run on create, not update
   if (operation !== 'create') return doc
 
   const githubToken = process.env.GITHUB_TOKEN
@@ -33,6 +27,8 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
   const repoOwner = process.env.GITHUB_OWNER ?? templateOwner
   const cfApiToken = process.env.CF_API_TOKEN
   const cfAccountId = process.env.CF_ACCOUNT_ID
+  const cmsUrl = process.env.ADMIN_URL ?? process.env.PAYLOAD_PUBLIC_SERVER_URL ?? ''
+  const webhookSecret = process.env.WEBHOOK_SECRET ?? ''
 
   if (!githubToken) {
     req.payload.logger.warn('GITHUB_TOKEN not set — skipping auto repo creation')
@@ -41,17 +37,26 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
 
   const domain = doc.domain as string
   const siteName = doc.name as string
-  // Create a clean repo name from the domain
   const repoName = domain
     .replace(/^www\./, '')
-    .replace(/\.[^.]+$/, '') // remove TLD
+    .replace(/\.[^.]+$/, '')
     .replace(/[^a-z0-9-]/gi, '-')
     .toLowerCase()
 
-  req.payload.logger.info(`Creating GitHub repo "${repoName}" for site "${siteName}" (${domain})`)
+  // CF Pages project name (must be lowercase, alphanumeric + hyphens)
+  const pagesProjectName = repoName
+
+  req.payload.logger.info(
+    `Provisioning site "${siteName}": repo=${repoName}, pages=${pagesProjectName}, domain=${domain}`,
+  )
+
+  let repoFullName = ''
+  let repoUrl = ''
 
   try {
-    // ── Step 1: Create repo from template ──
+    // ════════════════════════════════════════════
+    // Step 1: Create GitHub repo from template
+    // ════════════════════════════════════════════
     const createRepoRes = await fetch(
       `https://api.github.com/repos/${templateOwner}/${templateRepo}/generate`,
       {
@@ -64,7 +69,7 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
         body: JSON.stringify({
           owner: repoOwner,
           name: repoName,
-          description: `Website for ${siteName} — powered by Website Factory`,
+          description: `${siteName} — powered by Website Factory`,
           private: false,
           include_all_branches: false,
         }),
@@ -78,15 +83,137 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
     }
 
     const repo = (await createRepoRes.json()) as { full_name: string; html_url: string }
-    req.payload.logger.info(`Repo created: ${repo.html_url}`)
+    repoFullName = repo.full_name
+    repoUrl = repo.html_url
+    req.payload.logger.info(`GitHub repo created: ${repoUrl}`)
 
-    // Wait a moment for GitHub to finish generating from template
-    await new Promise((r) => setTimeout(r, 3000))
+    // Wait for GitHub to finish generating from template
+    await new Promise((r) => setTimeout(r, 5000))
 
-    // ── Step 2: Update wrangler.toml in the new repo ──
-    // Get current file content
+    // ════════════════════════════════════════════
+    // Step 2: Create Cloudflare Pages project
+    //         connected to the new GitHub repo
+    // ════════════════════════════════════════════
+    let pagesUrl = ''
+
+    if (cfApiToken && cfAccountId) {
+      req.payload.logger.info(`Creating CF Pages project: ${pagesProjectName}`)
+
+      const createPagesRes = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/pages/projects`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${cfApiToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: pagesProjectName,
+            production_branch: 'main',
+            source: {
+              type: 'github',
+              config: {
+                owner: repoOwner,
+                repo_name: repoName,
+                production_branch: 'main',
+                pr_comments_enabled: true,
+                deployments_enabled: true, // Auto-deploy on push
+                production_deployments_enabled: true,
+                preview_deployment_setting: 'all',
+                preview_branch_includes: ['*'],
+              },
+            },
+            build_config: {
+              build_command: 'npm run build',
+              destination_dir: 'dist',
+              root_dir: '',
+            },
+          }),
+        },
+      )
+
+      if (createPagesRes.ok) {
+        const pagesData = (await createPagesRes.json()) as {
+          result: { subdomain: string; name: string }
+        }
+        pagesUrl = `https://${pagesData.result.subdomain}`
+        req.payload.logger.info(`CF Pages project created: ${pagesUrl}`)
+      } else {
+        const err = await createPagesRes.text()
+        req.payload.logger.warn(`CF Pages creation response: ${err}`)
+        // If project already exists, continue — it might have been created manually
+      }
+
+      // ════════════════════════════════════════════
+      // Step 3: Set environment variables on Pages
+      // ════════════════════════════════════════════
+      req.payload.logger.info('Setting Pages environment variables...')
+
+      await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/pages/projects/${pagesProjectName}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${cfApiToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            deployment_configs: {
+              production: {
+                env_vars: {
+                  PAYLOAD_API_URL: { value: cmsUrl },
+                  WEBHOOK_SECRET: { value: webhookSecret },
+                },
+                kv_namespaces: {
+                  // Bind KV for resilient cache
+                  SITE_CACHE: { namespace_id: process.env.KV_NAMESPACE_ID ?? '' },
+                },
+              },
+              preview: {
+                env_vars: {
+                  PAYLOAD_API_URL: { value: cmsUrl },
+                  WEBHOOK_SECRET: { value: webhookSecret },
+                },
+              },
+            },
+          }),
+        },
+      )
+
+      // ════════════════════════════════════════════
+      // Step 4: Add custom domain to Pages project
+      // ════════════════════════════════════════════
+      req.payload.logger.info(`Adding custom domain: ${domain}`)
+
+      const domainRes = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/pages/projects/${pagesProjectName}/domains`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${cfApiToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name: domain }),
+        },
+      )
+
+      if (domainRes.ok) {
+        req.payload.logger.info(`Custom domain ${domain} added to ${pagesProjectName}`)
+      } else {
+        const err = await domainRes.text()
+        req.payload.logger.warn(
+          `Domain setup needs manual DNS: CNAME ${domain} → ${pagesProjectName}.pages.dev — ${err}`,
+        )
+      }
+    }
+
+    // ════════════════════════════════════════════
+    // Step 5: Update wrangler.toml in the new repo
+    // ════════════════════════════════════════════
+    req.payload.logger.info('Updating repo config...')
+
     const fileRes = await fetch(
-      `https://api.github.com/repos/${repo.full_name}/contents/wrangler.toml`,
+      `https://api.github.com/repos/${repoFullName}/contents/wrangler.toml`,
       {
         headers: {
           Authorization: `Bearer ${githubToken}`,
@@ -99,11 +226,11 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
       const fileData = (await fileRes.json()) as { sha: string; content: string }
       const currentContent = atob(fileData.content.replace(/\n/g, ''))
 
-      // Update the PAYLOAD_API_URL and WEBHOOK_SECRET
-      const cmsUrl = process.env.ADMIN_URL ?? process.env.PAYLOAD_PUBLIC_SERVER_URL ?? ''
-      const webhookSecret = process.env.WEBHOOK_SECRET ?? ''
-
-      let updatedContent = currentContent
+      const updatedContent = currentContent
+        .replace(
+          /name\s*=\s*"[^"]*"/,
+          `name = "${pagesProjectName}"`,
+        )
         .replace(
           /PAYLOAD_API_URL\s*=\s*"[^"]*"/,
           `PAYLOAD_API_URL = "${cmsUrl}"`,
@@ -113,9 +240,8 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
           `WEBHOOK_SECRET = "${webhookSecret}"`,
         )
 
-      // Update to new file
       await fetch(
-        `https://api.github.com/repos/${repo.full_name}/contents/wrangler.toml`,
+        `https://api.github.com/repos/${repoFullName}/contents/wrangler.toml`,
         {
           method: 'PUT',
           headers: {
@@ -123,52 +249,34 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
             Accept: 'application/vnd.github+json',
           },
           body: JSON.stringify({
-            message: `Configure for ${domain}`,
+            message: `Configure for ${siteName} (${domain})`,
             content: btoa(updatedContent),
             sha: fileData.sha,
           }),
         },
       )
+      req.payload.logger.info('Repo config updated — this triggers auto-deploy')
     }
 
-    // ── Step 3: Add custom domain to Cloudflare Pages ──
-    if (cfApiToken && cfAccountId) {
-      const pagesProject = process.env.CF_PAGES_PROJECT ?? 'website-factory-frontend'
-
-      const domainRes = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/pages/projects/${pagesProject}/domains`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${cfApiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ name: domain }),
-        },
-      )
-
-      if (domainRes.ok) {
-        req.payload.logger.info(`Custom domain ${domain} added to Cloudflare Pages`)
-      } else {
-        const err = await domainRes.text()
-        req.payload.logger.warn(`Could not add domain to CF Pages: ${err}`)
-      }
-    }
-
-    // ── Step 4: Update the site doc with the repo URL ──
+    // ════════════════════════════════════════════
+    // Step 6: Update site doc with repo + pages URLs
+    // ════════════════════════════════════════════
     try {
       await req.payload.update({
         collection: 'sites',
         id: doc.id,
         data: {
-          repoUrl: repo.html_url,
+          repoUrl: repoUrl,
+          pagesUrl: `https://${pagesProjectName}.pages.dev`,
         } as any,
       })
     } catch {
-      // Field may not exist yet — non-fatal
+      // Fields may not exist yet
     }
 
-    // ── Step 5: Create default settings + home page ──
+    // ════════════════════════════════════════════
+    // Step 7: Create default settings + home page
+    // ════════════════════════════════════════════
     const existingSettings = await req.payload.find({
       collection: 'site-settings',
       where: { site: { equals: doc.id } },
@@ -241,9 +349,11 @@ export const createSiteRepo: CollectionAfterChangeHook = async ({
       })
     }
 
-    req.payload.logger.info(`Site "${siteName}" fully provisioned!`)
+    req.payload.logger.info(
+      `Site "${siteName}" fully provisioned! Repo: ${repoUrl} | Pages: https://${pagesProjectName}.pages.dev | Domain: ${domain}`,
+    )
   } catch (err) {
-    req.payload.logger.error(`Error creating site repo: ${err}`)
+    req.payload.logger.error(`Error provisioning site: ${err}`)
   }
 
   return doc
