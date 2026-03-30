@@ -106,10 +106,11 @@ export default buildConfig({
         try {
           const sites = await req.payload.find({
             collection: 'sites',
+            overrideAccess: true,
             where: {
               or: [
                 { domain: { equals: domain } },
-                { 'domains.domain': { equals: domain } },
+                { 'customDomains.domain': { equals: domain } },
               ],
             },
             limit: 1,
@@ -123,11 +124,13 @@ export default buildConfig({
           const [settings, pages] = await Promise.all([
             req.payload.find({
               collection: 'site-settings',
+              overrideAccess: true,
               where: { site: { equals: site.id } },
               limit: 1,
             }),
             req.payload.find({
               collection: 'pages',
+              overrideAccess: true,
               where: {
                 and: [
                   { site: { equals: site.id } },
