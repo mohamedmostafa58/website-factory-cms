@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head><title>CMS Debug</title></head>
+<body style="font-family:monospace;padding:20px;background:#111;color:#0f0;">
+<h2>Website Factory CMS — Debug Page</h2>
+<p>Loading admin in iframe to capture errors...</p>
+<pre id="log" style="white-space:pre-wrap;border:1px solid #333;padding:10px;max-height:80vh;overflow:auto;"></pre>
+<script>
+const log = document.getElementById('log');
+function addLog(msg) {
+  log.textContent += new Date().toISOString().substr(11,12) + ' ' + msg + '\n';
+  log.scrollTop = log.scrollHeight;
+}
+
+// Capture all errors
+window.addEventListener('error', (e) => {
+  addLog('ERROR: ' + e.message + ' at ' + e.filename + ':' + e.lineno);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  addLog('UNHANDLED REJECTION: ' + (e.reason?.message || e.reason?.toString() || JSON.stringify(e.reason)));
+});
+
+// Test API
+addLog('Testing API...');
+fetch('/api/users', {headers:{'Content-Type':'application/json'}})
+  .then(r => { addLog('API /api/users: ' + r.status); return r.text(); })
+  .then(t => addLog('Response: ' + t.substring(0,200)))
+  .catch(e => addLog('API ERROR: ' + e.message));
+
+// Test chunk loading
+addLog('Testing chunk load...');
+fetch('/_next/static/chunks/webpack-66c2a2fa1f24c24c.js')
+  .then(r => addLog('Webpack chunk: ' + r.status + ' size=' + r.headers.get('content-length')))
+  .catch(e => addLog('Chunk ERROR: ' + e.message));
+
+// Test RSC
+addLog('Testing RSC...');
+fetch('/admin/login', {headers:{'RSC':'1','Next-Url':'/admin/login'}})
+  .then(r => { addLog('RSC /admin/login: ' + r.status); return r.text(); })
+  .then(t => addLog('RSC size: ' + t.length + ' starts: ' + t.substring(0,100)))
+  .catch(e => addLog('RSC ERROR: ' + e.message));
+
+// Now try loading the actual admin page in an iframe
+addLog('Loading /admin/login in iframe...');
+setTimeout(() => {
+  const iframe = document.createElement('iframe');
+  iframe.src = '/admin/login';
+  iframe.style.cssText = 'width:100%;height:600px;border:2px solid #333;margin-top:10px;';
+  iframe.onload = () => addLog('Iframe loaded');
+  iframe.onerror = (e) => addLog('Iframe error: ' + e);
+  document.body.appendChild(iframe);
+}, 1000);
+
+// Also test the serverFunction endpoint
+addLog('Testing server action...');
+fetch('/admin', {
+  method: 'POST',
+  headers: {'Next-Action': 'test', 'Content-Type': 'text/plain;charset=UTF-8'},
+  body: '[]'
+}).then(r => addLog('Server action: ' + r.status))
+  .catch(e => addLog('Server action ERROR: ' + e.message));
+</script>
+</body>
+</html>

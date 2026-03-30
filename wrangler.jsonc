@@ -26,6 +26,15 @@
       "bucket_name": "website-factory-media"
     }
   ],
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "website-factory-cms"
+    }
+  ],
+  "limits": {
+    "cpu_ms": 30000
+  },
   "kv_namespaces": [
     {
       "binding": "KV_SESSIONS",
