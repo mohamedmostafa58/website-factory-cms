@@ -83,6 +83,34 @@ export default buildConfig({
     meta: {
       titleSuffix: '— Website Factory',
     },
+    livePreview: {
+      // Live preview for Pages collection — shows the frontend site in an iframe
+      collections: ['pages'],
+      url: async ({ data, collectionConfig, payload }) => {
+        // Look up the site's pagesUrl to build the preview URL
+        if (data?.site) {
+          try {
+            const siteId = typeof data.site === 'object' ? data.site.id : data.site
+            const site = await payload.findByID({
+              collection: 'sites',
+              id: siteId,
+              overrideAccess: true,
+            })
+            const baseUrl = (site as any)?.pagesUrl
+            if (baseUrl) {
+              const slug = data.slug || ''
+              return `${baseUrl}/${slug === 'home' ? '' : slug}`
+            }
+          } catch {}
+        }
+        return '/admin'
+      },
+      breakpoints: [
+        { label: 'Mobile', name: 'mobile', width: 375, height: 667 },
+        { label: 'Tablet', name: 'tablet', width: 768, height: 1024 },
+        { label: 'Desktop', name: 'desktop', width: 1440, height: 900 },
+      ],
+    },
   },
 
   // CORS: allow frontend domains
